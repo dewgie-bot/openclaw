@@ -413,6 +413,45 @@ describe("spawnAcpDirect", () => {
     expect(agentCall?.params?.threadId).toBe("1");
   });
 
+  it("keeps inline delivery for thread-bound ACP runs when the non-threaded toggle is disabled", async () => {
+    hoisted.state.cfg = {
+      ...hoisted.state.cfg,
+      acp: {
+        ...hoisted.state.cfg.acp,
+        dispatch: {
+          ...hoisted.state.cfg.acp?.dispatch,
+          nonThreadedCompletionToParent: false,
+        },
+      },
+    };
+
+    const result = await spawnAcpDirect(
+      {
+        task: "Investigate flaky tests",
+        agentId: "codex",
+        mode: "run",
+        thread: true,
+      },
+      {
+        agentSessionKey: "agent:main:main",
+        agentChannel: "discord",
+        agentAccountId: "default",
+        agentTo: "channel:parent-channel",
+        agentThreadId: "requester-thread",
+      },
+    );
+
+    expect(result.status).toBe("accepted");
+    expect(result.mode).toBe("run");
+    const agentCall = hoisted.callGatewayMock.mock.calls
+      .map((call: unknown[]) => call[0] as { method?: string; params?: Record<string, unknown> })
+      .find((request) => request.method === "agent");
+    expect(agentCall?.params?.deliver).toBe(true);
+    expect(agentCall?.params?.channel).toBe("discord");
+    expect(agentCall?.params?.to).toBe("channel:child-thread");
+    expect(agentCall?.params?.threadId).toBe("child-thread");
+  });
+
   it("does not use inline delivery for opted-in non-threaded ACP runs from internal or non-deliverable channels", async () => {
     hoisted.state.cfg = {
       ...hoisted.state.cfg,

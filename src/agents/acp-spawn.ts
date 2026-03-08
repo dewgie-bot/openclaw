@@ -452,12 +452,13 @@ export async function spawnAcpDirect(
     isDeliverableMessageChannel(requesterOrigin.channel) &&
     inferredDeliveryTo,
   );
+  const isNonThreadedRun = spawnMode === "run" && !requestThreadBinding;
   // Non-threaded ACP runs still need an explicit return route so the final completion
   // can deliver back to the originating chat. Parent stream relay remains separate.
   const useInlineDelivery =
     hasExternalDeliveryTarget &&
     !streamToParentRequested &&
-    (spawnMode !== "run" || isNonThreadedAcpCompletionDeliveryEnabled(cfg));
+    (!isNonThreadedRun || isNonThreadedAcpCompletionDeliveryEnabled(cfg));
   const childIdem = crypto.randomUUID();
   let childRunId: string = childIdem;
   const streamLogPath =
