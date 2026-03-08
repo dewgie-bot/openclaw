@@ -32,6 +32,7 @@ import {
 } from "../infra/outbound/session-binding-service.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
+import { isDeliverableMessageChannel } from "../utils/message-channel.js";
 import {
   type AcpSpawnParentRelayHandle,
   resolveAcpSpawnStreamLogPath,
@@ -82,7 +83,7 @@ export const ACP_SPAWN_SESSION_ACCEPTED_NOTE =
   "thread-bound ACP session stays active after this task; continue in-thread for follow-ups.";
 
 function isNonThreadedAcpCompletionDeliveryEnabled(cfg: OpenClawConfig): boolean {
-  return cfg.acp?.dispatch?.nonThreadedCompletionToParent !== false;
+  return cfg.acp?.dispatch?.nonThreadedCompletionToParent === true;
 }
 
 export function resolveAcpSpawnRuntimePolicyError(params: {
@@ -443,11 +444,18 @@ export async function spawnAcpDirect(
   const inferredDeliveryTo = boundThreadId
     ? `channel:${boundThreadId}`
     : requesterOrigin?.to?.trim() || (deliveryThreadId ? `channel:${deliveryThreadId}` : undefined);
-  const hasDeliveryTarget = Boolean(requesterOrigin?.channel && inferredDeliveryTo);
+  // Inline delivery is only valid when the requester originated from a real outbound
+  // channel route. Internal/non-deliverable channels (for example webchat or tui)
+  // must not be forwarded through the outbound delivery path here.
+  const hasExternalDeliveryTarget = Boolean(
+    requesterOrigin?.channel &&
+    isDeliverableMessageChannel(requesterOrigin.channel) &&
+    inferredDeliveryTo,
+  );
   // Non-threaded ACP runs still need an explicit return route so the final completion
   // can deliver back to the originating chat. Parent stream relay remains separate.
   const useInlineDelivery =
-    hasDeliveryTarget &&
+    hasExternalDeliveryTarget &&
     !streamToParentRequested &&
     (spawnMode !== "run" || isNonThreadedAcpCompletionDeliveryEnabled(cfg));
   const childIdem = crypto.randomUUID();

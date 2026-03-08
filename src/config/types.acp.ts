@@ -4,8 +4,8 @@ export type AcpDispatchConfig = {
   /** Master switch for ACP turn dispatch in the reply pipeline. */
   enabled?: boolean;
   /**
-   * When true (default), non-threaded ACP run completions without an explicit
-   * deliverable target relay progress/final status back to the parent session.
+   * When true, non-threaded ACP run completions with a valid external delivery
+   * target relay progress/final status back to the parent session.
    */
   nonThreadedCompletionToParent?: boolean;
 };
