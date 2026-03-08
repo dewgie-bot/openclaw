@@ -3,6 +3,11 @@ import type { AcpSessionUpdateTag } from "../acp/runtime/types.js";
 export type AcpDispatchConfig = {
   /** Master switch for ACP turn dispatch in the reply pipeline. */
   enabled?: boolean;
+  /**
+   * When true (default), non-threaded ACP run completions without an explicit
+   * deliverable target relay progress/final status back to the parent session.
+   */
+  nonThreadedCompletionToParent?: boolean;
 };
 
 export type AcpStreamConfig = {

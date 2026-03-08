@@ -81,6 +81,10 @@ export const ACP_SPAWN_ACCEPTED_NOTE =
 export const ACP_SPAWN_SESSION_ACCEPTED_NOTE =
   "thread-bound ACP session stays active after this task; continue in-thread for follow-ups.";
 
+function isNonThreadedAcpCompletionDeliveryEnabled(cfg: OpenClawConfig): boolean {
+  return cfg.acp?.dispatch?.nonThreadedCompletionToParent !== false;
+}
+
 export function resolveAcpSpawnRuntimePolicyError(params: {
   cfg: OpenClawConfig;
   requesterSessionKey?: string;
@@ -442,7 +446,10 @@ export async function spawnAcpDirect(
   const hasDeliveryTarget = Boolean(requesterOrigin?.channel && inferredDeliveryTo);
   // Non-threaded ACP runs still need an explicit return route so the final completion
   // can deliver back to the originating chat. Parent stream relay remains separate.
-  const useInlineDelivery = hasDeliveryTarget && !streamToParentRequested;
+  const useInlineDelivery =
+    hasDeliveryTarget &&
+    !streamToParentRequested &&
+    (spawnMode !== "run" || isNonThreadedAcpCompletionDeliveryEnabled(cfg));
   const childIdem = crypto.randomUUID();
   let childRunId: string = childIdem;
   const streamLogPath =
