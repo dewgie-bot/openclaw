@@ -523,11 +523,10 @@ jobs:
         with:
           install-bun: "false"
 
-      # --- Run all checks sequentially (fast gates first) ---
-      - name: TS tests (macOS)
-        env:
-          NODE_OPTIONS: --max-old-space-size=4096
-        run: pnpm test
+      # --- Skip duplicate TS suite on fork macOS ---
+      # Linux and Windows jobs already cover the TypeScript test matrix.
+      # On the fork, macOS should focus on Apple-specific toolchain validation
+      # so PRs do not spend 30+ minutes rerunning the full JS suite before Swift starts.
 
       # --- Xcode/Swift setup ---
       - name: Select Xcode 26.1
