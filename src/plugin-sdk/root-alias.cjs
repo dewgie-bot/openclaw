@@ -169,7 +169,10 @@ rootExports = new Proxy(target, {
   },
   ownKeys() {
     const keys = new Set(Reflect.ownKeys(target));
-    const monolithic = getMonolithicSdk();
+    // Keep reflection on the fast root alias cheap. Enumerating keys should not
+    // force-load the monolithic SDK; once it has already been loaded by another
+    // access path, include its keys to preserve reflection semantics.
+    const monolithic = monolithicSdk && typeof monolithicSdk === "object" ? monolithicSdk : null;
     if (monolithic) {
       for (const key of Reflect.ownKeys(monolithic)) {
         if (!keys.has(key)) {
