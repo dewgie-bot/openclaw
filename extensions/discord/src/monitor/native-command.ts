@@ -1103,6 +1103,7 @@ async function dispatchDiscordCommandInteraction(params: {
   if (
     !suppressReplies &&
     !didReply &&
+    !dispatchResult.queuedFinal &&
     dispatchResult.counts.final === 0 &&
     dispatchResult.counts.block === 0 &&
     dispatchResult.counts.tool === 0

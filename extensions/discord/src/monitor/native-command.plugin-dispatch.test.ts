@@ -290,6 +290,7 @@ async function createStatusCommand(cfg: OpenClawConfig) {
 
 function createDispatchSpy() {
   return runtimeModuleMocks.dispatchReplyWithDispatcher.mockResolvedValue({
+    queuedFinal: true,
     counts: {
       final: 1,
       block: 0,
@@ -693,6 +694,58 @@ describe("Discord native plugin command dispatch", () => {
       interaction,
       expectedPattern: /^agent:codex:acp:binding:discord:default:/,
     });
+  });
+
+  it("does not send synthetic Done for /status when the dispatcher already queued a final reply", async () => {
+    const cfg = createConfig();
+    const interaction = createInteraction();
+    runtimeModuleMocks.matchPluginCommand.mockReturnValue(null);
+    runtimeModuleMocks.dispatchReplyWithDispatcher.mockResolvedValue({
+      queuedFinal: true,
+      counts: {
+        final: 0,
+        block: 0,
+        tool: 0,
+      },
+    } as never);
+    const command = await createStatusCommand(cfg);
+
+    await (command as { run: (interaction: unknown) => Promise<void> }).run(interaction as unknown);
+
+    expect(interaction.reply).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "✅ Done.",
+      }),
+    );
+    expect(interaction.followUp).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "✅ Done.",
+      }),
+    );
+  });
+
+  it("keeps the synthetic Done fallback for genuinely empty /status completions", async () => {
+    const cfg = createConfig();
+    const interaction = createInteraction();
+    runtimeModuleMocks.matchPluginCommand.mockReturnValue(null);
+    runtimeModuleMocks.dispatchReplyWithDispatcher.mockResolvedValue({
+      queuedFinal: false,
+      counts: {
+        final: 0,
+        block: 0,
+        tool: 0,
+      },
+    } as never);
+    const command = await createStatusCommand(cfg);
+
+    await (command as { run: (interaction: unknown) => Promise<void> }).run(interaction as unknown);
+
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "✅ Done.",
+        ephemeral: true,
+      }),
+    );
   });
 
   it("allows recovery commands through configured ACP bindings even when ensure fails", async () => {

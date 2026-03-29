@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentRunRecord } from "../../agents/subagent-registry.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { clearSessionStoreCacheForTest, resolveStorePath } from "../../config/sessions.js";
 import {
   __testing as abortTesting,
   getAbortMemory,
@@ -188,6 +189,7 @@ describe("abort detection", () => {
       clearCommandLane: commandQueueMocks.clearCommandLane,
     });
     commandQueueMocks.clearCommandLane.mockClear().mockReturnValue(1);
+    subagentRegistryMocks.listSubagentRunsForRequester.mockReset().mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -197,6 +199,7 @@ describe("abort detection", () => {
     commandQueueMocks.clearCommandLane.mockClear().mockReturnValue(1);
     acpManagerMocks.resolveSession.mockReset().mockReturnValue({ kind: "none" });
     acpManagerMocks.cancelSession.mockReset().mockResolvedValue(undefined);
+    subagentRegistryMocks.listSubagentRunsForRequester.mockReset().mockReturnValue([]);
     subagentRegistryMocks.getLatestSubagentRunByChildSessionKey.mockReset().mockReturnValue(null);
   });
 
@@ -871,5 +874,73 @@ describe("abort detection", () => {
 
     expect(result).toEqual({ stopped: 0 });
     expect(subagentRegistryMocks.markSubagentRunTerminated).not.toHaveBeenCalled();
+  });
+
+  it("stopSubagentsForRequester cancels spawned one-shot ACP children for the requester", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-abort-acp-"));
+    const storePattern = path.join(root, "{agentId}", "sessions", "sessions.json");
+    const cfg = {
+      session: { store: storePattern },
+      acp: { allowedAgents: ["codex"] },
+      agents: { list: [{ id: "main", default: true }] },
+    } as OpenClawConfig;
+
+    await fs.mkdir(path.dirname(resolveStorePath(storePattern, { agentId: "main" })), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      resolveStorePath(storePattern, { agentId: "main" }),
+      JSON.stringify(
+        {
+          "agent:main:main": {
+            sessionId: "sess-main",
+            updatedAt: Date.now(),
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    await fs.mkdir(path.dirname(resolveStorePath(storePattern, { agentId: "codex" })), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      resolveStorePath(storePattern, { agentId: "codex" }),
+      JSON.stringify(
+        {
+          "agent:codex:acp:child-oneshot": {
+            sessionId: "sess-acp-child",
+            updatedAt: Date.now(),
+            spawnedBy: "agent:main:main",
+            acp: {
+              backend: "acpx",
+              agent: "codex",
+              runtimeSessionName: "runtime:child-oneshot",
+              mode: "oneshot",
+              state: "busy",
+              lastActivityAt: Date.now(),
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    clearSessionStoreCacheForTest();
+
+    const result = stopSubagentsForRequester({
+      cfg,
+      requesterSessionKey: "agent:main:main",
+    });
+
+    expect(result).toEqual({ stopped: 1 });
+    expect(acpManagerMocks.cancelSession).toHaveBeenCalledWith({
+      cfg,
+      sessionKey: "agent:codex:acp:child-oneshot",
+      reason: "fast-abort",
+    });
+    expectSessionLaneCleared("agent:codex:acp:child-oneshot");
   });
 });
