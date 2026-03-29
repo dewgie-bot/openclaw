@@ -2,8 +2,27 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import JSON5 from "json5";
 
 type RestoreEntry = { key: string; value: string | undefined };
+
+const LIVE_EXTERNAL_AUTH_DIRS = [".claude", ".codex", ".minimax"] as const;
+
+function isTruthyEnvValue(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  switch (value.trim().toLowerCase()) {
+    case "":
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      return true;
+  }
+}
 
 function restoreEnv(entries: RestoreEntry[]): void {
   for (const { key, value } of entries) {
@@ -15,56 +34,97 @@ function restoreEnv(entries: RestoreEntry[]): void {
   }
 }
 
-function loadProfileEnv(): void {
-  const profilePath = path.join(os.homedir(), ".profile");
+function resolveHomeRelativePath(input: string, homeDir: string): string {
+  const trimmed = input.trim();
+  if (trimmed === "~") {
+    return homeDir;
+  }
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+    return path.join(homeDir, trimmed.slice(2));
+  }
+  return path.resolve(trimmed);
+}
+
+function applyMissingEnvEntries(entries: readonly string[]): number {
+  let applied = 0;
+  for (const entry of entries) {
+    if (!entry) {
+      continue;
+    }
+    const idx = entry.indexOf("=");
+    if (idx <= 0) {
+      continue;
+    }
+    const key = entry.slice(0, idx);
+    if (!key || (process.env[key] ?? "") !== "") {
+      continue;
+    }
+    process.env[key] = entry.slice(idx + 1);
+    applied += 1;
+  }
+  return applied;
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value.at(-1);
+    if ((first === '"' || first === "'") && first === last) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
+export function applySimpleProfileEnv(profileContents: string): number {
+  const entries: string[] = [];
+  for (const rawLine of profileContents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+    const [, key, rawValue] = match;
+    const value = stripWrappingQuotes(rawValue.trim());
+    entries.push(`${key}=${value}`);
+  }
+  return applyMissingEnvEntries(entries);
+}
+
+function loadProfileEnv(homeDir = os.homedir()): void {
+  const profilePath = path.join(homeDir, ".profile");
   if (!fs.existsSync(profilePath)) {
     return;
   }
+  let applied = 0;
   try {
+    const bashBin = process.platform === "win32" ? "bash" : "/bin/bash";
     const output = execFileSync(
-      "/bin/bash",
+      bashBin,
       ["-lc", `set -a; source "${profilePath}" >/dev/null 2>&1; env -0`],
       { encoding: "utf8" },
     );
-    const entries = output.split("\0");
-    let applied = 0;
-    for (const entry of entries) {
-      if (!entry) {
-        continue;
-      }
-      const idx = entry.indexOf("=");
-      if (idx <= 0) {
-        continue;
-      }
-      const key = entry.slice(0, idx);
-      if (!key || (process.env[key] ?? "") !== "") {
-        continue;
-      }
-      process.env[key] = entry.slice(idx + 1);
-      applied += 1;
-    }
-    if (applied > 0) {
-      console.log(`[live] loaded ${applied} env vars from ~/.profile`);
-    }
+    applied += applyMissingEnvEntries(output.split("\0"));
   } catch {
-    // ignore profile load failures
+    // ignore shell-based profile load failures and fall back to simple parsing below
+  }
+
+  try {
+    applied += applySimpleProfileEnv(fs.readFileSync(profilePath, "utf8"));
+  } catch {
+    // ignore direct profile parse failures
+  }
+
+  if (applied > 0 && !isTruthyEnvValue(process.env.OPENCLAW_LIVE_TEST_QUIET)) {
+    console.log(`[live] loaded ${applied} env vars from ~/.profile`);
   }
 }
 
-export function installTestEnv(): { cleanup: () => void; tempHome: string } {
-  const live =
-    process.env.LIVE === "1" ||
-    process.env.OPENCLAW_LIVE_TEST === "1" ||
-    process.env.OPENCLAW_LIVE_GATEWAY === "1";
-
-  // Live tests must use the real user environment (keys, profiles, config).
-  // The default test env isolates HOME to avoid touching real state.
-  if (live) {
-    loadProfileEnv();
-    return { cleanup: () => {}, tempHome: process.env.HOME ?? "" };
-  }
-
-  const restore: RestoreEntry[] = [
+function resolveRestoreEntries(): RestoreEntry[] {
+  return [
     { key: "OPENCLAW_TEST_FAST", value: process.env.OPENCLAW_TEST_FAST },
     { key: "HOME", value: process.env.HOME },
     { key: "USERPROFILE", value: process.env.USERPROFILE },
@@ -80,6 +140,8 @@ export function installTestEnv(): { cleanup: () => void; tempHome: string } {
     { key: "OPENCLAW_BRIDGE_PORT", value: process.env.OPENCLAW_BRIDGE_PORT },
     { key: "OPENCLAW_CANVAS_HOST_PORT", value: process.env.OPENCLAW_CANVAS_HOST_PORT },
     { key: "OPENCLAW_TEST_HOME", value: process.env.OPENCLAW_TEST_HOME },
+    { key: "OPENCLAW_AGENT_DIR", value: process.env.OPENCLAW_AGENT_DIR },
+    { key: "PI_CODING_AGENT_DIR", value: process.env.PI_CODING_AGENT_DIR },
     { key: "TELEGRAM_BOT_TOKEN", value: process.env.TELEGRAM_BOT_TOKEN },
     { key: "DISCORD_BOT_TOKEN", value: process.env.DISCORD_BOT_TOKEN },
     { key: "SLACK_BOT_TOKEN", value: process.env.SLACK_BOT_TOKEN },
@@ -90,7 +152,12 @@ export function installTestEnv(): { cleanup: () => void; tempHome: string } {
     { key: "GITHUB_TOKEN", value: process.env.GITHUB_TOKEN },
     { key: "NODE_OPTIONS", value: process.env.NODE_OPTIONS },
   ];
+}
 
+function createIsolatedTestHome(restore: RestoreEntry[]): {
+  cleanup: () => void;
+  tempHome: string;
+} {
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-test-home-"));
 
   process.env.HOME = tempHome;
@@ -102,6 +169,8 @@ export function installTestEnv(): { cleanup: () => void; tempHome: string } {
   delete process.env.OPENCLAW_CONFIG_PATH;
   // Prefer deriving state dir from HOME so nested tests that change HOME also isolate correctly.
   delete process.env.OPENCLAW_STATE_DIR;
+  delete process.env.OPENCLAW_AGENT_DIR;
+  delete process.env.PI_CODING_AGENT_DIR;
   // Prefer test-controlled ports over developer overrides (avoid port collisions across tests/workers).
   delete process.env.OPENCLAW_GATEWAY_PORT;
   delete process.env.OPENCLAW_BRIDGE_ENABLED;
@@ -140,6 +209,141 @@ export function installTestEnv(): { cleanup: () => void; tempHome: string } {
   };
 
   return { cleanup, tempHome };
+}
+
+function ensureParentDir(targetPath: string): void {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+}
+
+function copyDirIfExists(sourcePath: string, targetPath: string): void {
+  if (!fs.existsSync(sourcePath)) {
+    return;
+  }
+  fs.mkdirSync(targetPath, { recursive: true });
+  fs.cpSync(sourcePath, targetPath, {
+    recursive: true,
+    force: true,
+  });
+}
+
+function copyFileIfExists(sourcePath: string, targetPath: string): void {
+  if (!fs.existsSync(sourcePath)) {
+    return;
+  }
+  ensureParentDir(targetPath);
+  fs.copyFileSync(sourcePath, targetPath);
+}
+
+function sanitizeLiveConfig(raw: string): string {
+  try {
+    const parsed = JSON5.parse(raw) as {
+      agents?: {
+        defaults?: Record<string, unknown>;
+        list?: Array<Record<string, unknown>>;
+      };
+    };
+    if (!parsed || typeof parsed !== "object") {
+      return raw;
+    }
+    if (parsed.agents?.defaults && typeof parsed.agents.defaults === "object") {
+      delete parsed.agents.defaults.workspace;
+      delete parsed.agents.defaults.agentDir;
+    }
+    if (Array.isArray(parsed.agents?.list)) {
+      parsed.agents.list = parsed.agents.list.map((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return entry;
+        }
+        const nextEntry = { ...entry };
+        delete nextEntry.workspace;
+        delete nextEntry.agentDir;
+        return nextEntry;
+      });
+    }
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  } catch {
+    return raw;
+  }
+}
+
+function copyLiveAuthProfiles(realStateDir: string, tempStateDir: string): void {
+  const agentsDir = path.join(realStateDir, "agents");
+  if (!fs.existsSync(agentsDir)) {
+    return;
+  }
+  for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const sourcePath = path.join(agentsDir, entry.name, "agent", "auth-profiles.json");
+    const targetPath = path.join(tempStateDir, "agents", entry.name, "agent", "auth-profiles.json");
+    copyFileIfExists(sourcePath, targetPath);
+  }
+}
+
+function stageLiveTestState(params: {
+  env: NodeJS.ProcessEnv;
+  realHome: string;
+  tempHome: string;
+}): void {
+  const homeStateDir = path.join(params.realHome, ".openclaw");
+  const configuredStateDir = params.env.OPENCLAW_STATE_DIR?.trim()
+    ? resolveHomeRelativePath(params.env.OPENCLAW_STATE_DIR, params.realHome)
+    : homeStateDir;
+  const stateDirs = Array.from(new Set([homeStateDir, configuredStateDir]));
+  const tempStateDir = path.join(params.tempHome, ".openclaw");
+  fs.mkdirSync(tempStateDir, { recursive: true });
+
+  const explicitConfigPath = params.env.OPENCLAW_CONFIG_PATH?.trim()
+    ? resolveHomeRelativePath(params.env.OPENCLAW_CONFIG_PATH, params.realHome)
+    : undefined;
+  const resolvedConfigPath =
+    explicitConfigPath ??
+    stateDirs
+      .map((dir) => path.join(dir, "openclaw.json"))
+      .find((candidate) => fs.existsSync(candidate));
+  if (resolvedConfigPath && fs.existsSync(resolvedConfigPath)) {
+    const rawConfig = fs.readFileSync(resolvedConfigPath, "utf8");
+    fs.writeFileSync(
+      path.join(tempStateDir, "openclaw.json"),
+      sanitizeLiveConfig(rawConfig),
+      "utf8",
+    );
+  }
+
+  for (const stateDir of stateDirs) {
+    copyDirIfExists(path.join(stateDir, "credentials"), path.join(tempStateDir, "credentials"));
+    copyLiveAuthProfiles(stateDir, tempStateDir);
+  }
+
+  for (const authDir of LIVE_EXTERNAL_AUTH_DIRS) {
+    copyDirIfExists(path.join(params.realHome, authDir), path.join(params.tempHome, authDir));
+  }
+}
+
+export function installTestEnv(): { cleanup: () => void; tempHome: string } {
+  const live =
+    process.env.LIVE === "1" ||
+    process.env.OPENCLAW_LIVE_TEST === "1" ||
+    process.env.OPENCLAW_LIVE_GATEWAY === "1";
+  const allowRealHome = isTruthyEnvValue(process.env.OPENCLAW_LIVE_USE_REAL_HOME);
+  const realHome = process.env.HOME ?? os.homedir();
+  const liveEnvSnapshot = { ...process.env };
+
+  loadProfileEnv(realHome);
+
+  if (live && allowRealHome) {
+    return { cleanup: () => {}, tempHome: realHome };
+  }
+
+  const restore = resolveRestoreEntries();
+  const testEnv = createIsolatedTestHome(restore);
+
+  if (live) {
+    stageLiveTestState({ env: liveEnvSnapshot, realHome, tempHome: testEnv.tempHome });
+  }
+
+  return testEnv;
 }
 
 export function withIsolatedTestHome(): { cleanup: () => void; tempHome: string } {
