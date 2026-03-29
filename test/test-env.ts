@@ -45,11 +45,61 @@ function resolveHomeRelativePath(input: string, homeDir: string): string {
   return path.resolve(trimmed);
 }
 
+function applyMissingEnvEntries(entries: readonly string[]): number {
+  let applied = 0;
+  for (const entry of entries) {
+    if (!entry) {
+      continue;
+    }
+    const idx = entry.indexOf("=");
+    if (idx <= 0) {
+      continue;
+    }
+    const key = entry.slice(0, idx);
+    if (!key || (process.env[key] ?? "") !== "") {
+      continue;
+    }
+    process.env[key] = entry.slice(idx + 1);
+    applied += 1;
+  }
+  return applied;
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value.at(-1);
+    if ((first === '"' || first === "'") && first === last) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
+export function applySimpleProfileEnv(profileContents: string): number {
+  const entries: string[] = [];
+  for (const rawLine of profileContents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+    const [, key, rawValue] = match;
+    const value = stripWrappingQuotes(rawValue.trim());
+    entries.push(`${key}=${value}`);
+  }
+  return applyMissingEnvEntries(entries);
+}
+
 function loadProfileEnv(homeDir = os.homedir()): void {
   const profilePath = path.join(homeDir, ".profile");
   if (!fs.existsSync(profilePath)) {
     return;
   }
+  let applied = 0;
   try {
     const bashBin = process.platform === "win32" ? "bash" : "/bin/bash";
     const output = execFileSync(
@@ -57,28 +107,19 @@ function loadProfileEnv(homeDir = os.homedir()): void {
       ["-lc", `set -a; source "${profilePath}" >/dev/null 2>&1; env -0`],
       { encoding: "utf8" },
     );
-    const entries = output.split("\0");
-    let applied = 0;
-    for (const entry of entries) {
-      if (!entry) {
-        continue;
-      }
-      const idx = entry.indexOf("=");
-      if (idx <= 0) {
-        continue;
-      }
-      const key = entry.slice(0, idx);
-      if (!key || (process.env[key] ?? "") !== "") {
-        continue;
-      }
-      process.env[key] = entry.slice(idx + 1);
-      applied += 1;
-    }
-    if (applied > 0 && !isTruthyEnvValue(process.env.OPENCLAW_LIVE_TEST_QUIET)) {
-      console.log(`[live] loaded ${applied} env vars from ~/.profile`);
-    }
+    applied += applyMissingEnvEntries(output.split("\0"));
   } catch {
-    // ignore profile load failures
+    // ignore shell-based profile load failures and fall back to simple parsing below
+  }
+
+  try {
+    applied += applySimpleProfileEnv(fs.readFileSync(profilePath, "utf8"));
+  } catch {
+    // ignore direct profile parse failures
+  }
+
+  if (applied > 0 && !isTruthyEnvValue(process.env.OPENCLAW_LIVE_TEST_QUIET)) {
+    console.log(`[live] loaded ${applied} env vars from ~/.profile`);
   }
 }
 
