@@ -55,8 +55,8 @@ function applyMissingEnvEntries(entries: readonly string[]): number {
     if (idx <= 0) {
       continue;
     }
-    const key = entry.slice(0, idx);
-    if (!key || (process.env[key] ?? "") !== "") {
+    const key = entry.slice(0, idx).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || (process.env[key] ?? "") !== "") {
       continue;
     }
     process.env[key] = entry.slice(idx + 1);
@@ -78,12 +78,12 @@ function stripWrappingQuotes(value: string): string {
 
 export function applySimpleProfileEnv(profileContents: string): number {
   const entries: string[] = [];
-  for (const rawLine of profileContents.split(/\r?\n/)) {
+  for (const rawLine of profileContents.split(/\r?\n/u)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) {
       continue;
     }
-    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u);
     if (!match) {
       continue;
     }
@@ -287,9 +287,20 @@ function stageLiveTestState(params: {
   tempHome: string;
 }): void {
   const homeStateDir = path.join(params.realHome, ".openclaw");
-  const configuredStateDir = params.env.OPENCLAW_STATE_DIR?.trim()
-    ? resolveHomeRelativePath(params.env.OPENCLAW_STATE_DIR, params.realHome)
+  const rawConfiguredStateDir = params.env.OPENCLAW_STATE_DIR?.trim();
+  let configuredStateDir = rawConfiguredStateDir
+    ? resolveHomeRelativePath(rawConfiguredStateDir, params.realHome)
     : homeStateDir;
+  const priorIsolatedHome = params.env.OPENCLAW_TEST_HOME?.trim();
+  const snapshotHome = params.env.HOME?.trim();
+  if (
+    priorIsolatedHome &&
+    snapshotHome &&
+    snapshotHome !== priorIsolatedHome &&
+    configuredStateDir === path.join(priorIsolatedHome, ".openclaw")
+  ) {
+    configuredStateDir = homeStateDir;
+  }
   const stateDirs = Array.from(new Set([homeStateDir, configuredStateDir]));
   const tempStateDir = path.join(params.tempHome, ".openclaw");
   fs.mkdirSync(tempStateDir, { recursive: true });

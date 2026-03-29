@@ -396,10 +396,21 @@ export const providerContractCompatPluginIds: string[] = createLazyArrayView(
 );
 
 export function requireProviderContractProvider(providerId: string): ProviderPlugin {
-  const resolveExactProvider = (candidateId: string): ProviderPlugin | undefined =>
-    loadProviderContractEntriesForPluginIds(
-      providerContractPluginIdsByProviderId.get(candidateId) ?? [],
-    ).find((entry) => entry.provider.id === candidateId)?.provider;
+  const resolveExactProvider = (candidateId: string): ProviderPlugin | undefined => {
+    const pluginIds = providerContractPluginIdsByProviderId.get(candidateId) ?? [];
+    const entries = loadProviderContractEntriesForPluginIds(pluginIds);
+    const provider = entries.find((entry) => entry.provider.id === candidateId)?.provider;
+    if (provider) {
+      return provider;
+    }
+    const pluginScopedProviders = [
+      ...new Map(entries.map((entry) => [entry.provider.id, entry.provider])).values(),
+    ];
+    if (pluginIds.length === 1 && pluginScopedProviders.length === 1) {
+      return pluginScopedProviders[0];
+    }
+    return undefined;
+  };
 
   const provider = resolveExactProvider(providerId);
   if (provider) {
