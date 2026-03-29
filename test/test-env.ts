@@ -286,17 +286,24 @@ function stageLiveTestState(params: {
   realHome: string;
   tempHome: string;
 }): void {
-  const realStateDir = params.env.OPENCLAW_STATE_DIR?.trim()
+  const homeStateDir = path.join(params.realHome, ".openclaw");
+  const configuredStateDir = params.env.OPENCLAW_STATE_DIR?.trim()
     ? resolveHomeRelativePath(params.env.OPENCLAW_STATE_DIR, params.realHome)
-    : path.join(params.realHome, ".openclaw");
+    : homeStateDir;
+  const stateDirs = Array.from(new Set([homeStateDir, configuredStateDir]));
   const tempStateDir = path.join(params.tempHome, ".openclaw");
   fs.mkdirSync(tempStateDir, { recursive: true });
 
-  const realConfigPath = params.env.OPENCLAW_CONFIG_PATH?.trim()
+  const explicitConfigPath = params.env.OPENCLAW_CONFIG_PATH?.trim()
     ? resolveHomeRelativePath(params.env.OPENCLAW_CONFIG_PATH, params.realHome)
-    : path.join(realStateDir, "openclaw.json");
-  if (fs.existsSync(realConfigPath)) {
-    const rawConfig = fs.readFileSync(realConfigPath, "utf8");
+    : undefined;
+  const resolvedConfigPath =
+    explicitConfigPath ??
+    stateDirs
+      .map((dir) => path.join(dir, "openclaw.json"))
+      .find((candidate) => fs.existsSync(candidate));
+  if (resolvedConfigPath && fs.existsSync(resolvedConfigPath)) {
+    const rawConfig = fs.readFileSync(resolvedConfigPath, "utf8");
     fs.writeFileSync(
       path.join(tempStateDir, "openclaw.json"),
       sanitizeLiveConfig(rawConfig),
@@ -304,8 +311,10 @@ function stageLiveTestState(params: {
     );
   }
 
-  copyDirIfExists(path.join(realStateDir, "credentials"), path.join(tempStateDir, "credentials"));
-  copyLiveAuthProfiles(realStateDir, tempStateDir);
+  for (const stateDir of stateDirs) {
+    copyDirIfExists(path.join(stateDir, "credentials"), path.join(tempStateDir, "credentials"));
+    copyLiveAuthProfiles(stateDir, tempStateDir);
+  }
 
   for (const authDir of LIVE_EXTERNAL_AUTH_DIRS) {
     copyDirIfExists(path.join(params.realHome, authDir), path.join(params.tempHome, authDir));
