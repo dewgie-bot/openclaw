@@ -1182,7 +1182,8 @@
     "tui:dev": "OPENCLAW_PROFILE=dev node scripts/run-node.mjs --dev tui",
     "ui:build": "node scripts/ui.js build",
     "ui:dev": "node scripts/ui.js dev",
-    "ui:install": "node scripts/ui.js install"
+    "ui:install": "node scripts/ui.js install",
+    "update:fork": "bash scripts/update-fork.sh"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "0.17.0",
