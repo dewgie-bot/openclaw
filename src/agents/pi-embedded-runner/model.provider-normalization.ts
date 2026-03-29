@@ -1,8 +1,6 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { normalizeModelCompat } from "../model-compat.js";
+import { normalizeModelCompat } from "../../plugins/provider-model-compat.js";
 import { normalizeProviderId } from "../model-selection.js";
-
-const OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 
 function isOpenAIApiBaseUrl(baseUrl?: string): boolean {
   const trimmed = baseUrl?.trim();
@@ -12,46 +10,12 @@ function isOpenAIApiBaseUrl(baseUrl?: string): boolean {
   return /^https?:\/\/api\.openai\.com(?:\/v1)?\/?$/i.test(trimmed);
 }
 
-function isOpenAICodexBaseUrl(baseUrl?: string): boolean {
+function isXaiApiBaseUrl(baseUrl?: string): boolean {
   const trimmed = baseUrl?.trim();
   if (!trimmed) {
     return false;
   }
-  return /^https?:\/\/chatgpt\.com\/backend-api\/?$/i.test(trimmed);
-}
-
-function normalizeOpenAICodexTransport(params: {
-  provider: string;
-  model: Model<Api>;
-}): Model<Api> {
-  if (normalizeProviderId(params.provider) !== "openai-codex") {
-    return params.model;
-  }
-
-  const useCodexTransport =
-    !params.model.baseUrl ||
-    isOpenAIApiBaseUrl(params.model.baseUrl) ||
-    isOpenAICodexBaseUrl(params.model.baseUrl);
-
-  const nextApi =
-    useCodexTransport && params.model.api === "openai-responses"
-      ? ("openai-codex-responses" as const)
-      : params.model.api;
-  const nextBaseUrl =
-    nextApi === "openai-codex-responses" &&
-    (!params.model.baseUrl || isOpenAIApiBaseUrl(params.model.baseUrl))
-      ? OPENAI_CODEX_BASE_URL
-      : params.model.baseUrl;
-
-  if (nextApi === params.model.api && nextBaseUrl === params.model.baseUrl) {
-    return params.model;
-  }
-
-  return {
-    ...params.model,
-    api: nextApi,
-    baseUrl: nextBaseUrl,
-  } as Model<Api>;
+  return /^https?:\/\/api\.x\.ai(?:\/v1)?\/?$/i.test(trimmed);
 }
 
 function normalizeOpenAITransport(params: { provider: string; model: Model<Api> }): Model<Api> {
@@ -73,14 +37,38 @@ function normalizeOpenAITransport(params: { provider: string; model: Model<Api> 
   } as Model<Api>;
 }
 
+function normalizeXaiTransport(params: { provider: string; model: Model<Api> }): Model<Api> {
+  if (normalizeProviderId(params.provider) !== "xai") {
+    return params.model;
+  }
+
+  const useResponsesTransport =
+    params.model.api === "openai-completions" &&
+    (!params.model.baseUrl || isXaiApiBaseUrl(params.model.baseUrl));
+
+  if (!useResponsesTransport) {
+    return params.model;
+  }
+
+  return {
+    ...params.model,
+    api: "openai-responses",
+  } as Model<Api>;
+}
+
+export function applyBuiltInResolvedProviderTransportNormalization(params: {
+  provider: string;
+  model: Model<Api>;
+}): Model<Api> {
+  return normalizeXaiTransport({
+    ...params,
+    model: normalizeOpenAITransport(params),
+  });
+}
+
 export function normalizeResolvedProviderModel(params: {
   provider: string;
   model: Model<Api>;
 }): Model<Api> {
-  const normalizedOpenAI = normalizeOpenAITransport(params);
-  const normalizedCodex = normalizeOpenAICodexTransport({
-    provider: params.provider,
-    model: normalizedOpenAI,
-  });
-  return normalizeModelCompat(normalizedCodex);
+  return normalizeModelCompat(applyBuiltInResolvedProviderTransportNormalization(params));
 }
