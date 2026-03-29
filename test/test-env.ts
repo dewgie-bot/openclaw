@@ -51,8 +51,9 @@ function loadProfileEnv(homeDir = os.homedir()): void {
     return;
   }
   try {
+    const bashBin = process.platform === "win32" ? "bash" : "/bin/bash";
     const output = execFileSync(
-      "/bin/bash",
+      bashBin,
       ["-lc", `set -a; source "${profilePath}" >/dev/null 2>&1; env -0`],
       { encoding: "utf8" },
     );

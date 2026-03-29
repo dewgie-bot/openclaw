@@ -1,3 +1,4 @@
+import { normalizeProviderIdForAuth } from "../../agents/provider-id.js";
 import {
   BUNDLED_IMAGE_GENERATION_PLUGIN_IDS,
   BUNDLED_MEDIA_UNDERSTANDING_PLUGIN_IDS,
@@ -395,18 +396,30 @@ export const providerContractCompatPluginIds: string[] = createLazyArrayView(
 );
 
 export function requireProviderContractProvider(providerId: string): ProviderPlugin {
-  const provider = loadProviderContractEntriesForPluginIds(
-    providerContractPluginIdsByProviderId.get(providerId) ?? [],
-  ).find((entry) => entry.provider.id === providerId)?.provider;
-  if (!provider) {
-    if (providerContractLoadError) {
-      throw new Error(
-        `provider contract entry missing for ${providerId}; bundled provider registry failed to load: ${providerContractLoadError.message}`,
-      );
-    }
-    throw new Error(`provider contract entry missing for ${providerId}`);
+  const resolveExactProvider = (candidateId: string): ProviderPlugin | undefined =>
+    loadProviderContractEntriesForPluginIds(
+      providerContractPluginIdsByProviderId.get(candidateId) ?? [],
+    ).find((entry) => entry.provider.id === candidateId)?.provider;
+
+  const provider = resolveExactProvider(providerId);
+  if (provider) {
+    return provider;
   }
-  return provider;
+
+  const normalizedProviderId = normalizeProviderIdForAuth(providerId);
+  if (normalizedProviderId !== providerId) {
+    const normalizedProvider = resolveExactProvider(normalizedProviderId);
+    if (normalizedProvider) {
+      return normalizedProvider;
+    }
+  }
+
+  if (providerContractLoadError) {
+    throw new Error(
+      `provider contract entry missing for ${providerId}; bundled provider registry failed to load: ${providerContractLoadError.message}`,
+    );
+  }
+  throw new Error(`provider contract entry missing for ${providerId}`);
 }
 
 export function resolveProviderContractPluginIdsForProvider(
