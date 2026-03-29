@@ -1,5 +1,9 @@
 import { getAcpSessionManager } from "../../acp/control-plane/manager.js";
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  listAgentIds,
+  resolveDefaultAgentId,
+  resolveSessionAgentId,
+} from "../../agents/agent-scope.js";
 import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
 import {
   getLatestSubagentRunByChildSessionKey,
@@ -14,6 +18,7 @@ import {
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   loadSessionStore,
+  resolveAllAgentSessionStoreTargetsSync,
   resolveSessionStoreEntry,
   resolveStorePath,
   type SessionEntry,
@@ -136,6 +141,79 @@ function normalizeRequesterSessionKey(
   return resolveInternalSessionKey({ key: cleaned, alias, mainKey });
 }
 
+function isAbortEligibleSpawnedAcpSession(params: {
+  sessionKey: string;
+  entry?: SessionEntry;
+  requesterSessionKey: string;
+}): boolean {
+  const key = params.sessionKey.trim().toLowerCase();
+  const spawnedBy = params.entry?.spawnedBy?.trim();
+  if (!spawnedBy || spawnedBy !== params.requesterSessionKey) {
+    return false;
+  }
+  if (params.entry?.acp?.mode === "persistent") {
+    return false;
+  }
+  return key.includes(":acp:") || Boolean(params.entry?.acp);
+}
+
+function stopSpawnedAcpSessionsForRequester(params: {
+  cfg: OpenClawConfig;
+  requesterSessionKey: string;
+}): { stopped: number } {
+  const candidateStorePaths = new Set(
+    resolveAllAgentSessionStoreTargetsSync(params.cfg).map((target) => target.storePath),
+  );
+  const candidateAgentIds = new Set<string>([
+    resolveDefaultAgentId(params.cfg),
+    ...listAgentIds(params.cfg),
+    ...(params.cfg.acp?.allowedAgents ?? []),
+  ]);
+  for (const agentId of candidateAgentIds) {
+    candidateStorePaths.add(resolveStorePath(params.cfg.session?.store, { agentId }));
+  }
+
+  const acpManager = abortDeps.getAcpSessionManager();
+  const seenChildKeys = new Set<string>();
+  const stoppedChildKeys = new Set<string>();
+
+  for (const storePath of candidateStorePaths) {
+    const store = loadSessionStore(storePath);
+    for (const [childKey, entry] of Object.entries(store)) {
+      if (
+        seenChildKeys.has(childKey) ||
+        !isAbortEligibleSpawnedAcpSession({
+          sessionKey: childKey,
+          entry,
+          requesterSessionKey: params.requesterSessionKey,
+        })
+      ) {
+        continue;
+      }
+      seenChildKeys.add(childKey);
+
+      const sessionId = entry?.sessionId;
+      const cleared = clearSessionQueues([childKey, sessionId]);
+      void acpManager
+        .cancelSession({
+          cfg: params.cfg,
+          sessionKey: childKey,
+          reason: "fast-abort",
+        })
+        .catch((error) => {
+          logVerbose(
+            `abort: ACP child cancel failed for ${childKey}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      if (cleared.followupCleared > 0 || cleared.laneCleared > 0 || entry?.acp) {
+        stoppedChildKeys.add(childKey);
+      }
+    }
+  }
+
+  return { stopped: stoppedChildKeys.size };
+}
+
 export function stopSubagentsForRequester(params: {
   cfg: OpenClawConfig;
   requesterSessionKey?: string;
@@ -153,7 +231,7 @@ export function stopSubagentsForRequester(params: {
     const latest = abortDeps.getLatestSubagentRunByChildSessionKey(childKey);
     const latestControllerSessionKey =
       latest?.controllerSessionKey?.trim() || latest?.requesterSessionKey?.trim();
-    if (!latest || latest.runId !== run.runId || latestControllerSessionKey !== requesterKey) {
+    if (latest && (latest.runId !== run.runId || latestControllerSessionKey !== requesterKey)) {
       continue;
     }
     const existing = dedupedRunsByChildKey.get(childKey);
@@ -162,57 +240,59 @@ export function stopSubagentsForRequester(params: {
     }
   }
   const runs = Array.from(dedupedRunsByChildKey.values());
-  if (runs.length === 0) {
-    return { stopped: 0 };
-  }
-
   const storeCache = new Map<string, Record<string, SessionEntry>>();
   const seenChildKeys = new Set<string>();
   let stopped = 0;
 
-  for (const run of runs) {
-    const childKey = run.childSessionKey?.trim();
-    if (!childKey || seenChildKeys.has(childKey)) {
-      continue;
-    }
-    seenChildKeys.add(childKey);
-
-    if (!run.endedAt) {
-      const cleared = clearSessionQueues([childKey]);
-      const parsed = parseAgentSessionKey(childKey);
-      const storePath = resolveStorePath(params.cfg.session?.store, { agentId: parsed?.agentId });
-      let store = storeCache.get(storePath);
-      if (!store) {
-        store = loadSessionStore(storePath);
-        storeCache.set(storePath, store);
+  if (runs.length > 0) {
+    for (const run of runs) {
+      const childKey = run.childSessionKey?.trim();
+      if (!childKey || seenChildKeys.has(childKey)) {
+        continue;
       }
-      const entry = store[childKey];
-      const sessionId = entry?.sessionId;
-      const aborted = sessionId ? abortDeps.abortEmbeddedPiRun(sessionId) : false;
-      const markedTerminated =
-        abortDeps.markSubagentRunTerminated({
-          runId: run.runId,
-          childSessionKey: childKey,
-          reason: "killed",
-        }) > 0;
+      seenChildKeys.add(childKey);
 
-      if (markedTerminated || aborted || cleared.followupCleared > 0 || cleared.laneCleared > 0) {
-        stopped += 1;
+      if (!run.endedAt) {
+        const cleared = clearSessionQueues([childKey]);
+        const parsed = parseAgentSessionKey(childKey);
+        const storePath = resolveStorePath(params.cfg.session?.store, { agentId: parsed?.agentId });
+        let store = storeCache.get(storePath);
+        if (!store) {
+          store = loadSessionStore(storePath);
+          storeCache.set(storePath, store);
+        }
+        const entry = store[childKey];
+        const sessionId = entry?.sessionId;
+        const aborted = sessionId ? abortDeps.abortEmbeddedPiRun(sessionId) : false;
+        const markedTerminated =
+          abortDeps.markSubagentRunTerminated({
+            runId: run.runId,
+            childSessionKey: childKey,
+            reason: "killed",
+          }) > 0;
+
+        if (markedTerminated || aborted || cleared.followupCleared > 0 || cleared.laneCleared > 0) {
+          stopped += 1;
+        }
       }
-    }
 
-    // Cascade: also stop any sub-sub-agents spawned by this child.
-    const cascadeResult = stopSubagentsForRequester({
-      cfg: params.cfg,
-      requesterSessionKey: childKey,
-    });
-    stopped += cascadeResult.stopped;
+      // Cascade: also stop any sub-sub-agents spawned by this child.
+      const cascadeResult = stopSubagentsForRequester({
+        cfg: params.cfg,
+        requesterSessionKey: childKey,
+      });
+      stopped += cascadeResult.stopped;
+    }
   }
 
   if (stopped > 0) {
     logVerbose(`abort: stopped ${stopped} subagent run(s) for ${requesterKey}`);
   }
-  return { stopped };
+  const stoppedAcp = stopSpawnedAcpSessionsForRequester({
+    cfg: params.cfg,
+    requesterSessionKey: requesterKey,
+  }).stopped;
+  return { stopped: stopped + stoppedAcp };
 }
 
 export async function tryFastAbortFromMessage(params: {
