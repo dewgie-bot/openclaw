@@ -585,11 +585,12 @@ Quick answers plus deeper troubleshooting for real-world setups (local dev, VPS,
 
   </Accordion>
 
-  <Accordion title="Why am I seeing HTTP 429 rate_limit_error from Anthropic?">
-    That means your **Anthropic quota/rate limit** is exhausted for the current window. If you
-    use a **Claude subscription** (setup-token), wait for the window to
-    reset or upgrade your plan. If you use an **Anthropic API key**, check the Anthropic Console
-    for usage/billing and raise limits as needed.
+<a id="why-am-i-seeing-http-429-ratelimiterror-from-anthropic"></a>
+<Accordion title="Why am I seeing HTTP 429 rate_limit_error from Anthropic?">
+That means your **Anthropic quota/rate limit** is exhausted for the current window. If you
+use a **Claude subscription** (setup-token), wait for the window to
+reset or upgrade your plan. If you use an **Anthropic API key**, check the Anthropic Console
+for usage/billing and raise limits as needed.
 
     If the message is specifically:
     `Extra usage is required for long context requests`, the request is trying to use
@@ -1780,9 +1781,10 @@ Quick answers plus deeper troubleshooting for real-world setups (local dev, VPS,
   </Accordion>
 
   <Accordion title="Do sessions reset automatically if I never send /new?">
-    Yes. Sessions expire after `session.idleMinutes` (default **60**). The **next**
-    message starts a fresh session id for that chat key. This does not delete
-    transcripts - it just starts a new session.
+    Sessions can expire after `session.idleMinutes`, but this is **disabled by default** (default **0**).
+    Set it to a positive value to enable idle expiry. When enabled, the **next**
+    message after the idle period starts a fresh session id for that chat key.
+    This does not delete transcripts - it just starts a new session.
 
     ```json5
     {
@@ -1885,7 +1887,7 @@ Quick answers plus deeper troubleshooting for real-world setups (local dev, VPS,
   </Accordion>
 
   <Accordion title="Why am I getting heartbeat messages every 30 minutes?">
-    Heartbeats run every **30m** by default. Tune or disable them:
+    Heartbeats run every **30m** by default (**1h** when using OAuth auth). Tune or disable them:
 
     ```json5
     {
@@ -2085,13 +2087,15 @@ Quick answers plus deeper troubleshooting for real-world setups (local dev, VPS,
 
     ```
     /model sonnet
-    /model haiku
     /model opus
     /model gpt
     /model gpt-mini
     /model gemini
     /model gemini-flash
+    /model gemini-flash-lite
     ```
+
+    These are the built-in aliases. Custom aliases can be added via `agents.defaults.models`.
 
     You can list available models with `/model`, `/model list`, or `/model status`.
 
@@ -2952,23 +2956,18 @@ Related: [/concepts/oauth](/concepts/oauth) (OAuth flows, token storage, multi-a
 
     ```json5
     {
-      agents: {
-        defaults: {
-          tools: {
-            message: {
-              crossContext: {
-                allowAcrossProviders: true,
-                marker: { enabled: true, prefix: "[from {channel}] " },
-              },
-            },
+      tools: {
+        message: {
+          crossContext: {
+            allowAcrossProviders: true,
+            marker: { enabled: true, prefix: "[from {channel}] " },
           },
         },
       },
     }
     ```
 
-    Restart the gateway after editing config. If you only want this for a single
-    agent, set it under `agents.list[].tools.message` instead.
+    Restart the gateway after editing config.
 
   </Accordion>
 
