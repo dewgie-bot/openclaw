@@ -37,12 +37,17 @@ vi.mock("../../../../src/gateway/session-utils.js", () => ({
 vi.mock("../../../../src/agents/agent-scope.js", () => ({
   resolveSessionAgentId: (...args: unknown[]) => runtimeModuleMocks.resolveSessionAgentId(...args),
   resolveAgentConfig: (...args: unknown[]) => runtimeModuleMocks.resolveAgentConfig(...args),
+  listAgentEntries: () => [],
 }));
 
-vi.mock("../../../../src/agents/model-selection.js", () => ({
-  resolveDefaultModelForAgent: (...args: unknown[]) =>
-    runtimeModuleMocks.resolveDefaultModelForAgent(...args),
-}));
+vi.mock("../../../../src/agents/model-selection.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../src/agents/model-selection.js")>();
+  return {
+    ...actual,
+    resolveDefaultModelForAgent: (...args: unknown[]) =>
+      runtimeModuleMocks.resolveDefaultModelForAgent(...args),
+  };
+});
 
 let createDiscordNativeCommand: typeof import("./native-command.js").createDiscordNativeCommand;
 let discordNativeCommandTesting: typeof import("./native-command.js").__testing;

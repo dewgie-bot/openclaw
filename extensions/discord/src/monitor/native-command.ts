@@ -1017,14 +1017,19 @@ async function dispatchDiscordCommandInteraction(params: {
     targetSessionKey: effectiveRoute.sessionKey,
     boundSessionKey,
   });
+  const mediaLocalRoots = getAgentScopedMediaLocalRoots(cfg, effectiveRoute.agentId);
   if (!suppressReplies && (command.nativeName ?? command.key) === "status") {
     const statusTargetSessionKey = commandTargetSessionKey?.trim() || sessionKey;
     const statusCommand: CommandContext = {
       surface: "discord",
       channel: "discord",
       channelId,
-      ownerList: [],
-      senderIsOwner: commandAuthorized,
+      ownerList: Array.isArray(discordConfig?.allowFrom)
+        ? [...discordConfig.allowFrom]
+        : Array.isArray(discordConfig?.dm?.allowFrom)
+          ? [...discordConfig.dm.allowFrom]
+          : [],
+      senderIsOwner: ownerOk,
       isAuthorizedSender: commandAuthorized,
       senderId: sender.id,
       abortKey: statusTargetSessionKey,
@@ -1048,6 +1053,7 @@ async function dispatchDiscordCommandInteraction(params: {
       await deliverDiscordInteractionReply({
         interaction,
         payload: statusReply,
+        mediaLocalRoots,
         textLimit: resolveTextChunkLimit(cfg, "discord", accountId, {
           fallbackLimit: 2000,
         }),
@@ -1061,6 +1067,8 @@ async function dispatchDiscordCommandInteraction(params: {
       });
       return;
     }
+    await respond("Status unavailable.");
+    return;
   }
   const ctxPayload = buildDiscordNativeCommandContext({
     prompt,
@@ -1095,7 +1103,6 @@ async function dispatchDiscordCommandInteraction(params: {
     channel: "discord",
     accountId: effectiveRoute.accountId,
   });
-  const mediaLocalRoots = getAgentScopedMediaLocalRoots(cfg, effectiveRoute.agentId);
 
   let didReply = false;
   const dispatchResult = await dispatchReplyWithDispatcherImpl({

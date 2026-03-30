@@ -1,13 +1,10 @@
-import { resolveAgentConfig, resolveSessionAgentId } from "../agents/agent-scope.js";
+import { listAgentEntries, resolveSessionAgentId } from "../agents/agent-scope.js";
 import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
 import { buildStatusReply } from "../auto-reply/reply/commands-status.js";
 import type { CommandContext } from "../auto-reply/reply/commands-types.js";
-import type {
-  ElevatedLevel,
-  ReasoningLevel,
-  ThinkLevel,
-  VerboseLevel,
-} from "../auto-reply/thinking.js";
+import { resolveDefaultModel } from "../auto-reply/reply/directive-handling.defaults.js";
+import { resolveCurrentDirectiveLevels } from "../auto-reply/reply/directive-handling.levels.js";
+import { createModelSelectionState } from "../auto-reply/reply/model-selection.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { loadSessionEntry } from "../gateway/session-utils.js";
@@ -117,10 +114,61 @@ export async function resolveDirectStatusReplyForSession(params: {
     sessionKey: statusTargetSessionKey,
     config: statusCfg,
   });
+  const agentCfg = statusCfg.agents?.defaults;
+  const agentEntry = listAgentEntries(statusCfg).find(
+    (entry) => entry.id?.trim().toLowerCase() === statusAgentId,
+  );
   const statusModel = resolveDefaultModelForAgent({
     cfg: statusCfg,
     agentId: statusAgentId,
   });
+  const { defaultProvider, defaultModel } = resolveDefaultModel({
+    cfg: statusCfg,
+    agentId: statusAgentId,
+  });
+  const selectedProvider =
+    statusEntry?.providerOverride?.trim() ||
+    statusEntry?.modelProvider?.trim() ||
+    statusModel.provider;
+  const selectedModel =
+    statusEntry?.modelOverride?.trim() || statusEntry?.model?.trim() || statusModel.model;
+  const modelState = await createModelSelectionState({
+    cfg: statusCfg,
+    agentId: statusAgentId,
+    agentCfg,
+    sessionEntry: statusEntry,
+    sessionStore: statusLoaded.store,
+    sessionKey: statusTargetSessionKey,
+    parentSessionKey: statusEntry?.parentSessionKey,
+    storePath: statusLoaded.storePath,
+    defaultProvider,
+    defaultModel,
+    provider: selectedProvider,
+    model: selectedModel,
+    hasModelDirective: false,
+  });
+  const {
+    currentThinkLevel,
+    currentFastMode,
+    currentVerboseLevel,
+    currentReasoningLevel,
+    currentElevatedLevel,
+  } = await resolveCurrentDirectiveLevels({
+    sessionEntry: statusEntry,
+    agentEntry,
+    agentCfg,
+    resolveDefaultThinkingLevel: () => modelState.resolveDefaultThinkingLevel(),
+  });
+  let resolvedReasoningLevel = currentReasoningLevel;
+  const hasAgentReasoningDefault =
+    agentEntry?.reasoningDefault !== undefined && agentEntry?.reasoningDefault !== null;
+  const reasoningExplicitlySet =
+    (statusEntry?.reasoningLevel !== undefined && statusEntry?.reasoningLevel !== null) ||
+    hasAgentReasoningDefault;
+  const thinkingActive = currentThinkLevel !== "off";
+  if (!reasoningExplicitlySet && resolvedReasoningLevel === "off" && !thinkingActive) {
+    resolvedReasoningLevel = await modelState.resolveDefaultReasoningLevel();
+  }
   return await buildStatusReply({
     cfg: statusCfg,
     command: params.command,
@@ -129,19 +177,15 @@ export async function resolveDirectStatusReplyForSession(params: {
     parentSessionKey: statusEntry?.parentSessionKey,
     sessionScope: undefined,
     storePath: statusLoaded.storePath,
-    provider:
-      statusEntry?.providerOverride?.trim() ||
-      statusEntry?.modelProvider?.trim() ||
-      statusModel.provider,
-    model: statusEntry?.modelOverride?.trim() || statusEntry?.model?.trim() || statusModel.model,
+    provider: selectedProvider,
+    model: selectedModel,
     contextTokens: statusEntry?.contextTokens ?? 0,
-    resolvedThinkLevel: statusEntry?.thinkingLevel as ThinkLevel | undefined,
-    resolvedFastMode: statusEntry?.fastMode,
-    resolvedVerboseLevel: (statusEntry?.verboseLevel as VerboseLevel | undefined) ?? "off",
-    resolvedReasoningLevel: (statusEntry?.reasoningLevel as ReasoningLevel | undefined) ?? "off",
-    resolvedElevatedLevel: statusEntry?.elevatedLevel as ElevatedLevel | undefined,
-    resolveDefaultThinkingLevel: async () =>
-      resolveAgentConfig(statusCfg, statusAgentId)?.thinkingDefault,
+    resolvedThinkLevel: currentThinkLevel,
+    resolvedFastMode: currentFastMode,
+    resolvedVerboseLevel: currentVerboseLevel ?? "off",
+    resolvedReasoningLevel: resolvedReasoningLevel,
+    resolvedElevatedLevel: currentElevatedLevel,
+    resolveDefaultThinkingLevel: () => modelState.resolveDefaultThinkingLevel(),
     isGroup: params.isGroup,
     defaultGroupActivation: params.defaultGroupActivation,
   });
