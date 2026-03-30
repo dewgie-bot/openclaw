@@ -1,5 +1,5 @@
 import { ChannelType } from "discord-api-types/v10";
-import type { NativeCommandSpec } from "openclaw/plugin-sdk/command-auth";
+import type { CommandContext, NativeCommandSpec } from "openclaw/plugin-sdk/command-auth";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -10,11 +10,7 @@ import { createNoopThreadBindingManager } from "./thread-bindings.js";
 
 const runtimeModuleMocks = vi.hoisted(() => ({
   dispatchReplyWithDispatcher: vi.fn(),
-  buildStatusReply: vi.fn(),
-  loadSessionEntry: vi.fn(),
-  resolveSessionAgentId: vi.fn(),
-  resolveAgentConfig: vi.fn(),
-  resolveDefaultModelForAgent: vi.fn(),
+  resolveDirectStatusReplyForSession: vi.fn(),
 }));
 
 vi.mock("openclaw/plugin-sdk/reply-runtime", async (importOriginal) => {
@@ -26,48 +22,57 @@ vi.mock("openclaw/plugin-sdk/reply-runtime", async (importOriginal) => {
   };
 });
 
-vi.mock("../../../../src/auto-reply/reply/commands-status.js", () => ({
-  buildStatusReply: (...args: unknown[]) => runtimeModuleMocks.buildStatusReply(...args),
-}));
-
-vi.mock("../../../../src/gateway/session-utils.js", () => ({
-  loadSessionEntry: (...args: unknown[]) => runtimeModuleMocks.loadSessionEntry(...args),
-}));
-
-vi.mock("../../../../src/agents/agent-scope.js", () => ({
-  resolveSessionAgentId: (...args: unknown[]) => runtimeModuleMocks.resolveSessionAgentId(...args),
-  resolveAgentConfig: (...args: unknown[]) => runtimeModuleMocks.resolveAgentConfig(...args),
-  listAgentEntries: () => [],
-}));
-
-vi.mock("../../../../src/agents/model-selection.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../../src/agents/model-selection.js")>();
+vi.mock("openclaw/plugin-sdk/command-auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/command-auth")>();
   return {
     ...actual,
-    resolveDefaultModelForAgent: (...args: unknown[]) =>
-      runtimeModuleMocks.resolveDefaultModelForAgent(...args),
+    resolveDirectStatusReplyForSession: (...args: unknown[]) =>
+      runtimeModuleMocks.resolveDirectStatusReplyForSession(...args),
   };
 });
 
 let createDiscordNativeCommand: typeof import("./native-command.js").createDiscordNativeCommand;
 let discordNativeCommandTesting: typeof import("./native-command.js").__testing;
 
-function createInteraction(): MockCommandInteraction {
+function createInteraction(params?: {
+  channelType?: ChannelType;
+  channelId?: string;
+  threadParentId?: string | null;
+  guildId?: string | null;
+  guildName?: string;
+}): MockCommandInteraction {
   return createMockCommandInteraction({
     userId: "owner",
     username: "tester",
     globalName: "Tester",
-    channelType: ChannelType.DM,
-    channelId: "dm-1",
+    channelType: params?.channelType ?? ChannelType.DM,
+    channelId: params?.channelId ?? "dm-1",
+    threadParentId: params?.threadParentId,
+    guildId: params?.guildId ?? null,
+    guildName: params?.guildName,
     interactionId: "interaction-1",
   });
 }
 
-function createConfig(): OpenClawConfig {
+function createConfig(params?: { requireMention?: boolean }): OpenClawConfig {
   return {
+    commands: {
+      useAccessGroups: false,
+    },
     channels: {
       discord: {
         dm: { enabled: true, policy: "open" },
+        guilds: {
+          guild1: {
+            requireMention: true,
+            channels: {
+              chan1: {
+                allow: true,
+                requireMention: params?.requireMention ?? true,
+              },
+            },
+          },
+        },
       },
     },
   } as OpenClawConfig;
@@ -78,6 +83,65 @@ function createStatusCommandSpec(): NativeCommandSpec {
     name: "status",
     description: "Status",
     acceptsArgs: false,
+  };
+}
+
+async function createStatusCommand(cfg: OpenClawConfig) {
+  return createDiscordNativeCommand({
+    command: createStatusCommandSpec(),
+    cfg,
+    discordConfig: cfg.channels?.discord ?? {},
+    accountId: "default",
+    sessionPrefix: "discord:slash",
+    ephemeralDefault: true,
+    threadBindings: createNoopThreadBindingManager("default"),
+  });
+}
+
+function setDefaultRouteState() {
+  discordNativeCommandTesting.setResolveDiscordNativeInteractionRouteState(async (params) => ({
+    route: {
+      agentId: "main",
+      channel: "discord",
+      accountId: params.accountId ?? "default",
+      sessionKey: "agent:main:main",
+      mainSessionKey: "agent:main:main",
+      lastRoutePolicy: "session",
+      matchedBy: "default",
+    },
+    effectiveRoute: {
+      agentId: "main",
+      channel: "discord",
+      accountId: params.accountId ?? "default",
+      sessionKey: "agent:main:main",
+      mainSessionKey: "agent:main:main",
+      lastRoutePolicy: "session",
+      matchedBy: "default",
+    },
+    boundSessionKey: undefined,
+    configuredRoute: null,
+    configuredBinding: null,
+    bindingReadiness: null,
+  }));
+}
+
+function firstStatusCall(): {
+  cfg: OpenClawConfig;
+  command: CommandContext;
+  sessionKey: string;
+  isGroup: boolean;
+  defaultGroupActivation: () => "always" | "mention";
+} {
+  const call = runtimeModuleMocks.resolveDirectStatusReplyForSession.mock.calls[0]?.[0];
+  if (!call) {
+    throw new Error("expected resolveDirectStatusReplyForSession to be called");
+  }
+  return call as {
+    cfg: OpenClawConfig;
+    command: CommandContext;
+    sessionKey: string;
+    isGroup: boolean;
+    defaultGroupActivation: () => "always" | "mention";
   };
 }
 
@@ -97,73 +161,45 @@ describe("Discord native /status", () => {
       },
       queuedFinal: false,
     } as never);
-    runtimeModuleMocks.buildStatusReply.mockResolvedValue({ text: "status reply" });
-    runtimeModuleMocks.loadSessionEntry.mockReturnValue({
-      cfg: createConfig(),
-      storePath: "/tmp/session-store.json",
-      store: {},
-      entry: {
-        verboseLevel: "off",
-        reasoningLevel: "off",
-        contextTokens: 0,
-      },
-      canonicalKey: "agent:main:main",
-    });
-    runtimeModuleMocks.resolveSessionAgentId.mockReturnValue("main");
-    runtimeModuleMocks.resolveAgentConfig.mockReturnValue({});
-    runtimeModuleMocks.resolveDefaultModelForAgent.mockReturnValue({
-      provider: "openai-codex",
-      model: "gpt-5.4",
+    runtimeModuleMocks.resolveDirectStatusReplyForSession.mockResolvedValue({
+      text: "status reply",
     });
     discordNativeCommandTesting.setDispatchReplyWithDispatcher(
       runtimeModuleMocks.dispatchReplyWithDispatcher as typeof import("openclaw/plugin-sdk/reply-runtime").dispatchReplyWithDispatcher,
     );
-    discordNativeCommandTesting.setResolveDiscordNativeInteractionRouteState(async (params) => ({
-      route: {
-        agentId: "main",
-        channel: "discord",
-        accountId: params.accountId ?? "default",
-        sessionKey: "agent:main:main",
-        mainSessionKey: "agent:main:main",
-        lastRoutePolicy: "session",
-        matchedBy: "default",
-      },
-      effectiveRoute: {
-        agentId: "main",
-        channel: "discord",
-        accountId: params.accountId ?? "default",
-        sessionKey: "agent:main:main",
-        mainSessionKey: "agent:main:main",
-        lastRoutePolicy: "session",
-        matchedBy: "default",
-      },
-      boundSessionKey: undefined,
-      configuredRoute: null,
-      configuredBinding: null,
-      bindingReadiness: null,
-    }));
+    setDefaultRouteState();
   });
 
   it("returns a direct status reply without falling through the generic dispatcher", async () => {
-    const command = createDiscordNativeCommand({
-      command: createStatusCommandSpec(),
-      cfg: createConfig(),
-      discordConfig: createConfig().channels?.discord ?? {},
-      accountId: "default",
-      sessionPrefix: "discord:slash",
-      ephemeralDefault: true,
-      threadBindings: createNoopThreadBindingManager("default"),
-    });
+    const cfg = createConfig();
+    const command = await createStatusCommand(cfg);
     const interaction = createInteraction();
 
     await (command as { run: (interaction: unknown) => Promise<void> }).run(interaction as unknown);
 
-    expect(runtimeModuleMocks.buildStatusReply).toHaveBeenCalledTimes(1);
+    expect(runtimeModuleMocks.resolveDirectStatusReplyForSession).toHaveBeenCalledTimes(1);
     expect(runtimeModuleMocks.dispatchReplyWithDispatcher).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: "status reply",
       }),
     );
+  });
+
+  it("passes through the effective guild activation when requireMention is disabled", async () => {
+    const cfg = createConfig({ requireMention: false });
+    const command = await createStatusCommand(cfg);
+    const interaction = createInteraction({
+      channelType: ChannelType.GuildText,
+      channelId: "chan1",
+      guildId: "guild1",
+      guildName: "Guild One",
+    });
+
+    await (command as { run: (interaction: unknown) => Promise<void> }).run(interaction as unknown);
+
+    const statusCall = firstStatusCall();
+    expect(statusCall.isGroup).toBe(true);
+    expect(statusCall.defaultGroupActivation()).toBe("always");
   });
 });

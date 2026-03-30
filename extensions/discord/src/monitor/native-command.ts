@@ -37,6 +37,7 @@ import type { OpenClawConfig, loadConfig } from "openclaw/plugin-sdk/config-runt
 import { isDangerousNameMatchingEnabled } from "openclaw/plugin-sdk/config-runtime";
 import { resolveOpenProviderRuntimeGroupPolicy } from "openclaw/plugin-sdk/config-runtime";
 import { buildPairingReply } from "openclaw/plugin-sdk/conversation-runtime";
+import { resolveDiscordGroupRequireMention } from "openclaw/plugin-sdk/discord";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime";
 import * as pluginRuntime from "openclaw/plugin-sdk/plugin-runtime";
 import {
@@ -1047,7 +1048,18 @@ async function dispatchDiscordCommandInteraction(params: {
       command: statusCommand,
       sessionKey: statusTargetSessionKey,
       isGroup: isGuild || isGroupDm,
-      defaultGroupActivation: () => (!isDirectMessage && !isGroupDm ? "mention" : "always"),
+      defaultGroupActivation: () =>
+        isGuild
+          ? resolveDiscordGroupRequireMention({
+              cfg,
+              groupId: threadParentId ?? channelId,
+              groupChannel: threadParentName ?? channelName,
+              groupSpace: interaction.guild?.id,
+              accountId,
+            })
+            ? "mention"
+            : "always"
+          : "always",
     });
     if (statusReply && hasRenderableReplyPayload(statusReply)) {
       await deliverDiscordInteractionReply({
